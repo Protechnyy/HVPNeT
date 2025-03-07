@@ -35,9 +35,11 @@ class RETrainer(BaseTrainer):
         self.best_test_epoch = None
         self.optimizer = None
         if self.train_data is not None:
+            # 总训练步数 = 批次数量 * 训练轮数
             self.train_num_steps = len(self.train_data) * args.num_epochs
         self.step = 0
         self.args = args
+        # 根据是否使用提示调用不同的训练前函数
         if self.args.use_prompt:
             self.before_multimodal_train()
         else:
@@ -62,19 +64,27 @@ class RETrainer(BaseTrainer):
             self.pbar = pbar
             avg_loss = 0
             for epoch in range(1, self.args.num_epochs+1):
+                # 设置当前epoch描述
                 pbar.set_description_str(desc="Epoch {}/{}".format(epoch, self.args.num_epochs))
+                # 处理每个批次
                 for batch in self.train_data:
                     self.step += 1
                     batch = (tup.to(self.args.device)  if isinstance(tup, torch.Tensor) else tup for tup in batch)
                     (loss, logits), labels = self._step(batch, mode="train")
                     avg_loss += loss.detach().cpu().item()
 
+                    # 计算梯度
                     loss.backward()
+                    # 基于梯度更新模型权重
                     self.optimizer.step()
+                    # 按调度策略调整学习率
                     self.scheduler.step()
+                    # 清空梯度，为下一批次做准备
                     self.optimizer.zero_grad()
 
+                    # 每隔refresh_step步更新一次进度条
                     if self.step % self.refresh_step == 0:
+                        # 计算平均损失
                         avg_loss = float(avg_loss) / self.refresh_step
                         print_output = "loss:{:<6.5f}".format(avg_loss)
                         pbar.update(self.refresh_step)
@@ -83,6 +93,7 @@ class RETrainer(BaseTrainer):
                             self.writer.add_scalar(tag='train_loss', scalar_value=avg_loss, global_step=self.step)    # tensorbordx
                         avg_loss = 0
 
+                # 达到指定epoch后，开始评估
                 if epoch >= self.args.eval_begin_epoch:
                     self.evaluate(epoch)   # generator to dev.
             
@@ -98,7 +109,7 @@ class RETrainer(BaseTrainer):
         self.logger.info("  Batch size = %d", self.args.batch_size)
         step = 0
         true_labels, pred_labels = [], []
-        with torch.no_grad():
+        with torch.no_grad(): # 评估时不需要计算梯度
             with tqdm(total=len(self.dev_data), leave=False, dynamic_ncols=True) as pbar:
                 pbar.set_description_str(desc="Dev")
                 total_loss = 0
@@ -107,8 +118,10 @@ class RETrainer(BaseTrainer):
                     batch = (tup.to(self.args.device)  if isinstance(tup, torch.Tensor) else tup for tup in batch)  # to cpu/cuda device
                     (loss, logits), labels = self._step(batch, mode="dev")    # logits: batch, 3
                     total_loss += loss.detach().cpu().item()
-                    
+
+                    # 获取预测标签
                     preds = logits.argmax(-1)
+                    # 收集真实标签和预测标签
                     true_labels.extend(labels.view(-1).detach().cpu().tolist())
                     pred_labels.extend(preds.view(-1).detach().cpu().tolist())
                     pbar.update()
@@ -116,6 +129,7 @@ class RETrainer(BaseTrainer):
                 pbar.close()
                 sk_result = sk_classification_report(y_true=true_labels, y_pred=pred_labels, labels=list(self.re_dict.values())[1:], target_names=list(self.re_dict.keys())[1:], digits=4)
                 self.logger.info("%s\n", sk_result)
+                # 使用自定义的评估函数计算指标
                 result = eval_result(true_labels, pred_labels, self.re_dict, self.logger)
                 acc, micro_f1 = round(result['acc']*100, 4), round(result['micro_f1']*100, 4)
                 if self.writer:
@@ -134,7 +148,7 @@ class RETrainer(BaseTrainer):
                         self.logger.info("Save best model at {}".format(self.args.save_path))
                
 
-        self.model.train()
+        self.model.train() # 恢复到训练模式
 
     def test(self):
         self.model.eval()
@@ -187,15 +201,15 @@ class RETrainer(BaseTrainer):
             return outputs, labels
 
     def before_train(self):
+        # 对偏置和层归一化权重不进行权重衰减
         no_decay = ['bias', 'LayerNorm.weight']
         optimizer_grouped_parameters = [
                 {'params': [p for n, p in self.model.named_parameters() if not any(nd in n for nd in no_decay)], 'weight_decay': 1e-2},
                 {'params': [p for n, p in self.model.named_parameters() if any(nd in n for nd in no_decay)], 'weight_decay': 0.0}
         ]
         self.optimizer = optim.AdamW(optimizer_grouped_parameters, lr=self.args.lr)
-        self.scheduler = get_linear_schedule_with_warmup(optimizer=self.optimizer, 
-                                                            num_warmup_steps=self.args.warmup_ratio*self.train_num_steps, 
-                                                                num_training_steps=self.train_num_steps)
+        # 带预热的学习率调度器
+        self.scheduler = get_linear_schedule_with_warmup(optimizer=self.optimizer, num_warmup_steps=self.args.warmup_ratio*self.train_num_steps, num_training_steps=self.train_num_steps)
         self.model.to(self.args.device)
 
     
@@ -203,6 +217,7 @@ class RETrainer(BaseTrainer):
         optimizer_grouped_parameters = []
         params = {'lr':self.args.lr, 'weight_decay':1e-2}
         params['params'] = []
+        # 收集所有名称包含bert的参数
         for name, param in self.model.named_parameters():
             if 'bert' in name:
                 params['params'].append(param)
@@ -210,19 +225,18 @@ class RETrainer(BaseTrainer):
 
         params = {'lr':self.args.lr, 'weight_decay':1e-2}
         params['params'] = []
+        # 收集所有编码器卷积层和门控参数
         for name, param in self.model.named_parameters():
             if 'encoder_conv' in name or 'gates' in name:
                 params['params'].append(param)
         optimizer_grouped_parameters.append(params)
 
-        # freeze resnet
+        # 将所有ResNet图像模型的参数禁用梯度更新
         for name, param in self.model.named_parameters():
             if 'image_model' in name:
                 param.require_grad = False
         self.optimizer = optim.AdamW(optimizer_grouped_parameters, lr=self.args.lr)
-        self.scheduler = get_linear_schedule_with_warmup(optimizer=self.optimizer, 
-                                                            num_warmup_steps=self.args.warmup_ratio*self.train_num_steps, 
-                                                                num_training_steps=self.train_num_steps)
+        self.scheduler = get_linear_schedule_with_warmup(optimizer=self.optimizer, num_warmup_steps=self.args.warmup_ratio*self.train_num_steps, num_training_steps=self.train_num_steps)
         self.model.to(self.args.device)
 
 

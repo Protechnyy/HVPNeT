@@ -150,7 +150,7 @@ def main():
         transforms.CenterCrop(224),
         transforms.ToTensor(),
         transforms.Normalize(mean=[0.485, 0.456, 0.406],
-                             std=[0.229, 0.224, 0.225])])
+                             std=[0.229, 0.224, 0.225])]) # ImageNet的经验值
 
     set_seed(args.seed) # set seed, default is 1
     if args.save_path is not None:  # make save_path dir

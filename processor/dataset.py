@@ -15,7 +15,9 @@ class MMREProcessor(object):
     def __init__(self, data_path, bert_name):
         self.data_path = data_path
         self.re_path = data_path['re_path']
-        self.tokenizer = BertTokenizer.from_pretrained(bert_name, do_lower_case=True)
+        # 加载本地模型
+        self.tokenizer = BertTokenizer.from_pretrained("./bert-base-uncased", do_lower_case=True)
+        # 添加特殊标记，标记头(subject)与尾(object)实体
         self.tokenizer.add_special_tokens({'additional_special_tokens':['<s>', '</s>', '<o>', '</o>']})
 
     def load_from_file(self, mode="train", sample_ratio=1.0):
@@ -30,7 +32,7 @@ class MMREProcessor(object):
             lines = f.readlines()
             words, relations, heads, tails, imgids, dataid = [], [], [], [], [], []
             for i, line in enumerate(lines):
-                line = ast.literal_eval(line)   # str to dict
+                line = ast.literal_eval(line)   # 字符串转字典
                 words.append(line['token'])
                 relations.append(line['relation'])
                 heads.append(line['h']) # {name, pos}
@@ -69,7 +71,7 @@ class MMREProcessor(object):
 class MMPNERProcessor(object):
     def __init__(self, data_path, bert_name) -> None:
         self.data_path = data_path
-        self.tokenizer = BertTokenizer.from_pretrained(bert_name, do_lower_case=True)
+        self.tokenizer = BertTokenizer.from_pretrained("./bert-base-uncased", do_lower_case=True)
     
     def load_from_file(self, mode="train", sample_ratio=1.0):
         """
@@ -155,7 +157,9 @@ class MMREDataset(Dataset):
             if i == tail_pos[1]:
                 extend_word_list.append('</o>')
             extend_word_list.append(word_list[i])
+        # 将扩展的单词列表转换为字符串，用空格分隔
         extend_word_list = " ".join(extend_word_list)
+        # 使用BERT分词器对扩展的单词列表进行编码
         encode_dict = self.tokenizer.encode_plus(text=extend_word_list, max_length=self.max_seq, truncation=True, padding='max_length')
         input_ids, token_type_ids, attention_mask = encode_dict['input_ids'], encode_dict['token_type_ids'], encode_dict['attention_mask']
         input_ids, token_type_ids, attention_mask = torch.tensor(input_ids), torch.tensor(token_type_ids), torch.tensor(attention_mask)
@@ -167,7 +171,7 @@ class MMREDataset(Dataset):
             try:
                 img_path = os.path.join(self.img_path, imgid)
                 image = Image.open(img_path).convert('RGB')
-                image = self.transform(image)
+                image = self.transform(image) # 主图像尺寸(3,224,224)
             except:
                 img_path = os.path.join(self.img_path, 'inf.png')
                 image = Image.open(img_path).convert('RGB')
@@ -190,7 +194,7 @@ class MMREDataset(Dataset):
                 for i in range(3-len(aux_img_paths)):
                     aux_imgs.append(torch.zeros((3, 224, 224))) 
 
-                aux_imgs = torch.stack(aux_imgs, dim=0)
+                aux_imgs = torch.stack(aux_imgs, dim=0) # 将3个辅助图像堆叠成一个(3,3,224,224)的张量
                 assert len(aux_imgs) == 3
             return input_ids, token_type_ids, attention_mask, torch.tensor(re_label), image, aux_imgs
         return input_ids, token_type_ids, attention_mask, torch.tensor(re_label)
