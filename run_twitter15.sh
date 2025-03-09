@@ -9,7 +9,7 @@
 # save_path: model saved path
 
 DATASET_NAME="twitter15"
-BERT_NAME="bert-base-uncased"
+BERT_NAME="/home/data4t/yangyu/data/bert-base-uncased"
 
 lr=3e-5
 

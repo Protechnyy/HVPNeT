@@ -16,7 +16,7 @@ class MMREProcessor(object):
         self.data_path = data_path
         self.re_path = data_path['re_path']
         # 加载本地模型
-        self.tokenizer = BertTokenizer.from_pretrained("./bert-base-uncased", do_lower_case=True)
+        self.tokenizer = BertTokenizer.from_pretrained(bert_name, do_lower_case=True)
         # 添加特殊标记，标记头(subject)与尾(object)实体
         self.tokenizer.add_special_tokens({'additional_special_tokens':['<s>', '</s>', '<o>', '</o>']})
 
@@ -71,7 +71,7 @@ class MMREProcessor(object):
 class MMPNERProcessor(object):
     def __init__(self, data_path, bert_name) -> None:
         self.data_path = data_path
-        self.tokenizer = BertTokenizer.from_pretrained("./bert-base-uncased", do_lower_case=True)
+        self.tokenizer = BertTokenizer.from_pretrained(bert_name, do_lower_case=True)
     
     def load_from_file(self, mode="train", sample_ratio=1.0):
         """

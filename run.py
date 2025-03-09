@@ -118,7 +118,7 @@ def set_seed(seed=2021):
 def main():
     parser = argparse.ArgumentParser()
     parser.add_argument('--dataset_name', default='twitter15', type=str, help="The name of dataset.")
-    parser.add_argument('--bert_name', default='bert-base-uncased', type=str, help="Pretrained language model path")
+    parser.add_argument('--bert_name', default='/home/data4t/yangyu/data/bert-base-uncased', type=str, help="Pretrained language model path")
     parser.add_argument('--num_epochs', default=30, type=int, help="num training epochs")
     parser.add_argument('--device', default='cuda', type=str, help="cuda or cpu")
     parser.add_argument('--batch_size', default=32, type=int, help="batch size")
