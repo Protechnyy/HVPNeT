@@ -1,7 +1,7 @@
 #!/usr/bin/env bash
 
 DATASET_NAME="MRE"
-BERT_NAME="bert-base-uncased"
+BERT_NAME="/home/data4t/yangyu/data/bert-base-uncased"
 
 CUDA_VISIBLE_DEVICES=0 python -u run.py \
         --dataset_name=${DATASET_NAME} \
