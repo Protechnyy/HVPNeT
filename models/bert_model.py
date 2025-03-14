@@ -140,9 +140,9 @@ class HMNeTREModel(nn.Module):
         bsz = images.size(0)
         # full image prompt
         prompt_guids, aux_prompt_guids = self.image_model(images, aux_imgs) # [bsz, 256, 2, 2], [bsz, 512, 2, 2]....,对应ResNet四个残差块的输出
+
         # 将主图像的将4个层级的特征在通道维度拼接并重塑
         prompt_guids = torch.cat(prompt_guids, dim=1).view(bsz, self.args.prompt_len, -1) # [bsz, 3840, 2, 2] -> [bsz, 4, 3840]
-
         # 对每个辅助图像执行相同操作，生成3个类似张量
         aux_prompt_guids = [torch.cat(aux_prompt_guid, dim=1).view(bsz, self.args.prompt_len, -1) for aux_prompt_guid in aux_prompt_guids]  # 3 x [bsz, 4, 3840]
 
@@ -166,7 +166,7 @@ class HMNeTREModel(nn.Module):
             # 创建全零向量，存储多个ResNet层级加权融合的特征[bsz, 4, 1536]
             key_val = torch.zeros_like(split_prompt_guids[0]).to(self.args.device)
 
-            # 使用einsum操作实现批量加权计算，将不同层级的特征按权重融合。
+            # 使用einsum操作实现批量加权计算，将不同层级的特征按权重融合
             for i in range(4):
                 key_val = key_val + torch.einsum('bg,blh->blh', prompt_gate[:, i].view(-1, 1), split_prompt_guids[i])
 
