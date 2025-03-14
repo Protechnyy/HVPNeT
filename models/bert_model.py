@@ -14,14 +14,14 @@ class ImageModel(nn.Module):
     
     def forward(self, x, aux_imgs=None):
         # full image prompt
-        prompt_guids = self.get_resnet_prompt(x)    # 4x[bsz, 256, 7, 7]
+        prompt_guids = self.get_resnet_prompt(x)    # 4x[bsz, 256, 2, 2]
         
         # aux_imgs: bsz x 3(nums) x 3 x 224 x 224
         if aux_imgs is not None:
-            aux_prompt_guids = []   # goal: 3 x (4 x [bsz, 256, 7, 7])
+            aux_prompt_guids = []   # goal: 3 x (4 x [bsz, 256, 2, 2])
             aux_imgs = aux_imgs.permute([1, 0, 2, 3, 4])  # 3(nums) x bsz x 3 x 224 x 224
             for i in range(len(aux_imgs)):
-                aux_prompt_guid = self.get_resnet_prompt(aux_imgs[i]) # 4 x [bsz, 256, 7, 7]
+                aux_prompt_guid = self.get_resnet_prompt(aux_imgs[i]) # 4 x [bsz, 256, 2, 2]
                 aux_prompt_guids.append(aux_prompt_guid)   
             return prompt_guids, aux_prompt_guids
         return prompt_guids, None
@@ -33,7 +33,7 @@ class ImageModel(nn.Module):
             x ([torch.tensor]): bsz x 3 x 224 x 224
 
         Returns:
-            prompt_guids ([List[torch.tensor]]): 4 x List[bsz x 256 x 7 x 7]
+            prompt_guids ([List[torch.tensor]]): 4 x List[bsz x 256 x 2 x 2]
         """
         # image: bsz x 3 x 224 x 224
         prompt_guids = []
@@ -139,54 +139,58 @@ class HMNeTREModel(nn.Module):
     def get_visual_prompt(self, images, aux_imgs):
         bsz = images.size(0)
         # full image prompt
-        prompt_guids, aux_prompt_guids = self.image_model(images, aux_imgs)  # [bsz, 256, 2, 2], [bsz, 512, 2, 2]....
-        # 将主图像的4个层级特征拼接并重塑为[批次大小, 4, 3840]
-        prompt_guids = torch.cat(prompt_guids, dim=1).view(bsz, self.args.prompt_len, -1)   # bsz, 4, 3840
-        
+        prompt_guids, aux_prompt_guids = self.image_model(images, aux_imgs) # [bsz, 256, 2, 2], [bsz, 512, 2, 2]....,对应ResNet四个残差块的输出
+        # 将主图像的将4个层级的特征在通道维度拼接并重塑
+        prompt_guids = torch.cat(prompt_guids, dim=1).view(bsz, self.args.prompt_len, -1) # [bsz, 3840, 2, 2] -> [bsz, 4, 3840]
+
         # 对每个辅助图像执行相同操作，生成3个类似张量
-        # aux image prompts # 3 x (4 x [bsz, 256, 2, 2])
         aux_prompt_guids = [torch.cat(aux_prompt_guid, dim=1).view(bsz, self.args.prompt_len, -1) for aux_prompt_guid in aux_prompt_guids]  # 3 x [bsz, 4, 3840]
 
-        # 使用encoder_conv网络将3840维特征转换为6144维(4×2×768)
-        prompt_guids = self.encoder_conv(prompt_guids)  # bsz, 4, 4*2*768
-        aux_prompt_guids = [self.encoder_conv(aux_prompt_guid) for aux_prompt_guid in aux_prompt_guids] # 3 x [bsz, 4, 4*2*768]
-        # 将6144维特征分成4份，每份1536维(768×2)，对应4个ResNet层级
-        split_prompt_guids = prompt_guids.split(768*2, dim=-1)   # 4 x [bsz, 4, 768*2]
-        split_aux_prompt_guids = [aux_prompt_guid.split(768*2, dim=-1) for aux_prompt_guid in aux_prompt_guids]   # 3x [4 x [bsz, 4, 768*2]]
+        # 使用encoder_conv网络将3840维特征转换为6144维(4×2×768)，与BERT层兼容
+        prompt_guids = self.encoder_conv(prompt_guids) # [bsz, 4, 3840] -> [bsz, 4, 6144]
+        aux_prompt_guids = [self.encoder_conv(aux_prompt_guid) for aux_prompt_guid in aux_prompt_guids] # 3 * [bsz, 4, 6144]
+
+        # 将6144维特征分成4份，每份1536维，重新分配给4个ResNet层级
+        split_prompt_guids = prompt_guids.split(768*2, dim=-1) # [bsz, 4, 6144] -> 4 * [bsz, 4, 1536]
+        split_aux_prompt_guids = [aux_prompt_guid.split(768*2, dim=-1) for aux_prompt_guid in aux_prompt_guids] # 3*[4*[bsz, 4, 1536]]
         
-        # 计算4个层级特征的平均值，用于后续注意力门控
-        sum_prompt_guids = torch.stack(split_prompt_guids).sum(0).view(bsz, -1) / 4     # bsz, 4, 768*2
+        # 先堆叠，再在层级维度求和，最后重塑算平均，得到所有层级特征的均值表示
+        # [4, bsz, 4, 1536](stack) -> [bsz, 4, 1536](sum) -> [bsz, 6144](view) -> [bsz, 6144](/4取平均)
+        sum_prompt_guids = torch.stack(split_prompt_guids).sum(0).view(bsz, -1) / 4
         
         result = []
         for idx in range(12):  # 12层BERT
-            # 使用特定层的门控网络计算4个ResNet层级的权重,通过LeakyReLU和Softmax确保权重为正且总和为1
+            # 使用当前BERT层对应的门控网络处理平均特征，计算层级权重,通过LeakyReLU和Softmax确保权重为正且总和为1
             prompt_gate = F.softmax(F.leaky_relu(self.gates[idx](sum_prompt_guids)), dim=-1)
 
-            key_val = torch.zeros_like(split_prompt_guids[0]).to(self.args.device)  # bsz, 4, 768*2
+            # 创建全零向量，存储多个ResNet层级加权融合的特征[bsz, 4, 1536]
+            key_val = torch.zeros_like(split_prompt_guids[0]).to(self.args.device)
+
+            # 使用einsum操作实现批量加权计算，将不同层级的特征按权重融合。
             for i in range(4):
                 key_val = key_val + torch.einsum('bg,blh->blh', prompt_gate[:, i].view(-1, 1), split_prompt_guids[i])
 
-            # use gate mix aux image prompts
-            aux_key_vals = []   # 3 x [bsz, 4, 768*2]
             # 为每个辅助图像应用相同的加权融合过程
+            aux_key_vals = []   # 3 x [bsz, 4, 768*2]
             for split_aux_prompt_guid in split_aux_prompt_guids:
                 # 计算辅助图像的平均特征
                 sum_aux_prompt_guids = torch.stack(split_aux_prompt_guid).sum(0).view(bsz, -1) / 4     # bsz, 4, 768*2
                 # 为辅助图像计算权重
                 aux_prompt_gate = F.softmax(F.leaky_relu(self.gates[idx](sum_aux_prompt_guids)), dim=-1)
+                # 创建全零向量，存储多个ResNet层级加权融合的特征[bsz, 4, 1536]
                 aux_key_val = torch.zeros_like(split_aux_prompt_guid[0]).to(self.args.device)  # bsz, 4, 768*2
                 # 加权融合辅助图像特征
                 for i in range(4):
                     aux_key_val = aux_key_val + torch.einsum('bg,blh->blh', aux_prompt_gate[:, i].view(-1, 1), split_aux_prompt_guid[i])
                 aux_key_vals.append(aux_key_val)
-            # 将主图像和辅助图像特征列表合并
+            # 将主图像和辅助图像特征列表合并[bsz, 4, 1536]
             key_val = [key_val] + aux_key_vals
-            # 在序列长度维度(dim=1)上拼接，形成一个更长的视觉序列
+            # 在序列长度维度(dim=1)上拼接，形成一个更长的视觉序列[bsz, 16, 1536]
             key_val = torch.cat(key_val, dim=1)
             # 将1536维(768*2)特征分成两半：key和value各768维
             key_val = key_val.split(768, dim=-1)
-            # 重塑成BERT注意力机制所需的格式：[批次大小, 注意力头数(12), 视觉序列长度, 每头维度(64)],contiguous()确保内存连续性，优化性能
-            key, value = key_val[0].reshape(bsz, 12, -1, 64).contiguous(), key_val[1].reshape(bsz, 12, -1, 64).contiguous()  # bsz, 12, 4, 64
+            # 重塑成BERT注意力机制所需的格式：[bsz, num_heads(12), 视觉序列长度(4), 每头维度(64)],contiguous()确保内存连续性，优化性能
+            key, value = key_val[0].reshape(bsz, 12, -1, 64).contiguous(), key_val[1].reshape(bsz, 12, -1, 64).contiguous()
             # 创建一个key - value对元组
             temp_dict = (key, value)
             # 添加到结果列表中，形成12层的提示列表
